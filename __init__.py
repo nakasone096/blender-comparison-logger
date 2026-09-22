@@ -132,7 +132,7 @@ class LoggerManager:
                 pass
 
         ts = time.strftime("%Y%m%d_%H%M%S", time.localtime(LoggerManager._now()))
-        log_path = os.path.join(dir_abs, f"{pid}_{ts}.jsonl")
+        log_path = os.path.join(dir_abs, f"{pid}_video_{ts}.jsonl")
 
         try:
             with open(log_path, "a", encoding="utf-8") as f:
