@@ -1,0 +1,17 @@
+schema_version = "1.0.0"
+
+id = "gakushu_logger_hikaku"
+version = "0.1.0"
+name = "3DCG Learning Logger (Comparison Group)"
+tagline = "Silent background operation logger for video/textbook comparison group"
+maintainer = "Daichi"
+type = "add-on"
+
+blender_version_min = "4.2.0"
+
+license = [
+  "SPDX:GPL-3.0-or-later",
+]
+
+[permissions]
+files = "Save participant operation logs to disk"
