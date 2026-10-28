@@ -87,6 +87,35 @@ class LoggerManager:
         return os.path.join("~", "comparison_logs") + os.sep
 
     @staticmethod
+    def desktop_dir() -> str:
+        """実際のデスクトップのパス（OneDrive配下などにリダイレクトされていても取得できる）。"""
+        if os.name == "nt":
+            try:
+                import winreg
+                with winreg.OpenKey(
+                        winreg.HKEY_CURRENT_USER,
+                        r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders") as k:
+                    path, _ = winreg.QueryValueEx(k, "Desktop")
+                if path and os.path.isdir(path):
+                    return path
+            except Exception:
+                pass
+        return os.path.join(os.path.expanduser("~"), "Desktop")
+
+    @staticmethod
+    def resolve_log_dir(props) -> str:
+        """欄が空なら、デスクトップ/学籍番号_群 を使う。それも決められなければ既定フォルダ。"""
+        return (props.log_dir or "").strip() or LoggerManager.auto_log_dir(props) or LoggerManager.default_log_dir()
+
+    @staticmethod
+    def auto_log_dir(props) -> str:
+        """デスクトップ/学籍番号_群 （例：23DB999_video）。参加者ID未入力なら空文字。"""
+        pid = LoggerManager._safe_participant_id(props.participant_id)
+        if not pid:
+            return ""
+        return os.path.join(LoggerManager.desktop_dir(), f"{pid}_{LoggerManager.group_tag(props)}")
+
+    @staticmethod
     def ensure_dir_exists(path: str) -> str:
         abs_path = bpy.path.abspath(path)
         os.makedirs(abs_path, exist_ok=True)
@@ -136,11 +165,8 @@ class LoggerManager:
             props.participant_log_error = "参加者IDが未入力です"
             return False
 
-        if not (props.log_dir or "").strip():
-            props.log_dir = LoggerManager.default_log_dir()
-
         try:
-            dir_abs = LoggerManager.ensure_dir_exists(props.log_dir)
+            dir_abs = LoggerManager.ensure_dir_exists(LoggerManager.resolve_log_dir(props))
         except Exception as e:
             props.participant_log_error = f"ログ保存フォルダ作成に失敗: {e}"
             return False
@@ -286,7 +312,8 @@ class LOGGER_PG_Properties(PropertyGroup):
     participant_id: StringProperty(name="参加者ID", default="")
     log_dir: StringProperty(
         name="ログ保存フォルダ",
-        subtype='DIR_PATH',
+        description="空欄ならデスクトップの「学籍番号_群」フォルダに自動で保存します。"
+                    "（フォルダ選択ボタンはBlenderが落ちることがあるため使いません）",
         default="",
     )
     participant_log_path: StringProperty(default="")
@@ -352,12 +379,16 @@ class LOGGER_PG_Properties(PropertyGroup):
 
 class LOGGER_OT_set_default_log_dir(Operator):
     bl_idname = "logger.set_default_log_dir"
-    bl_label = "既定フォルダに設定"
-    bl_description = "ログ保存フォルダを既定値に戻し、フォルダも作成します"
+    bl_label = "フォルダを自動作成"
+    bl_description = "デスクトップに「学籍番号_群」フォルダ（例：23DB999_video）を作り、ログ保存先に設定します"
 
     def execute(self, context):
         props = context.scene.logger_props
-        props.log_dir = LoggerManager.default_log_dir()
+        target = LoggerManager.auto_log_dir(props)
+        if not target:
+            self.report({'ERROR'}, "先に参加者IDを入力してください")
+            return {'CANCELLED'}
+        props.log_dir = target
         try:
             LoggerManager.ensure_dir_exists(props.log_dir)
         except Exception as e:
@@ -375,7 +406,7 @@ class LOGGER_OT_open_log_folder(Operator):
     def execute(self, context):
         props = context.scene.logger_props
         try:
-            LoggerManager.open_folder_in_os(props.log_dir or LoggerManager.default_log_dir())
+            LoggerManager.open_folder_in_os(LoggerManager.resolve_log_dir(props))
         except Exception as e:
             self.report({'ERROR'}, f"フォルダを開けません: {e}")
             return {'CANCELLED'}
@@ -924,8 +955,10 @@ class LOGGER_PT_main(Panel):
             box.prop(props, "participant_id")
             box.prop(props, "group")
             box.prop(props, "log_dir")
+            if not (props.log_dir or "").strip():
+                box.label(text="空欄＝デスクトップの「学籍番号_群」に自動保存")
             row = box.row(align=True)
-            row.operator("logger.set_default_log_dir", text="既定フォルダに設定")
+            row.operator("logger.set_default_log_dir", text="フォルダを自動作成")
             row.operator("logger.open_log_folder", text="ログフォルダを開く")
             box.prop(props, "enable_logging")
 
