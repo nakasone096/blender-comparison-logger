@@ -2,10 +2,10 @@
 bl_info = {
     "name": "3DCG Learning Logger (Comparison Group)",
     "blender": (4, 2, 0),
-    "version": (0, 1, 0),
+    "version": (0, 2, 0),
     "author": "Daichi",
-    "description": "Silent background operation logger for the video/textbook comparison group. "
-                    "No hints, no chapter UI, no completion feedback shown to the participant.",
+    "description": "Comparison-study tool: silent learning-phase logger (video group) and a "
+                    "closed-book test mode shared by both groups. No hints, no chapter UI.",
     "category": "Education",
     "support": "COMMUNITY",
 }
@@ -26,7 +26,9 @@ from bpy.props import (
     FloatVectorProperty,
     FloatProperty,
     StringProperty,
+    EnumProperty,
 )
+from . import test_tasks
 
 # =====================================================
 # この比較実験で検出する6カテゴリ
@@ -59,10 +61,19 @@ ROUGHNESS_DONE_THRESHOLD = 0.2
 # LOGGER MANAGER (staticな補助関数群)
 # =====================================================
 
+# Blender の FloatProperty は 32bit 浮動小数点のため、UNIX時間（約17億）をそのまま保存すると
+# 最大±64秒ずれる。経過時間の計算に使う時刻は、起動時からの相対秒（_rel）で保存する。
+_T0 = time.time()
+
+
 class LoggerManager:
     @staticmethod
     def _now():
         return time.time()
+
+    @staticmethod
+    def _rel():
+        return time.time() - _T0
 
     @staticmethod
     def vec_dist(a, b):
@@ -107,9 +118,19 @@ class LoggerManager:
         return "".join(allowed)
 
     @staticmethod
-    def ensure_participant_log_file(context) -> bool:
+    def group_tag(props) -> str:
+        return "addon" if props.group == 'ADDON' else "video"
+
+    @staticmethod
+    def group_label(props) -> str:
+        return "addon" if props.group == 'ADDON' else "video_textbook"
+
+    @staticmethod
+    def ensure_participant_log_file(context, kind="learn") -> bool:
+        """kind='learn'（学習中ログ）または 'test'（確認テストのログ）。群タグをファイル名に入れる。"""
         props = context.scene.logger_props
         pid = LoggerManager._safe_participant_id(props.participant_id)
+        path_attr = "test_log_path" if kind == "test" else "participant_log_path"
 
         if not pid:
             props.participant_log_error = "参加者IDが未入力です"
@@ -124,9 +145,10 @@ class LoggerManager:
             props.participant_log_error = f"ログ保存フォルダ作成に失敗: {e}"
             return False
 
-        if props.participant_log_path:
+        current = getattr(props, path_attr)
+        if current:
             try:
-                existing = bpy.path.abspath(props.participant_log_path)
+                existing = bpy.path.abspath(current)
                 if os.path.isfile(existing):
                     props.participant_log_error = ""
                     return True
@@ -134,7 +156,9 @@ class LoggerManager:
                 pass
 
         ts = time.strftime("%Y%m%d_%H%M%S", time.localtime(LoggerManager._now()))
-        log_path = os.path.join(dir_abs, f"{pid}_video_{ts}.jsonl")
+        tag = LoggerManager.group_tag(props)
+        name = f"{pid}_{tag}_test_{ts}.jsonl" if kind == "test" else f"{pid}_{tag}_{ts}.jsonl"
+        log_path = os.path.join(dir_abs, name)
 
         try:
             with open(log_path, "a", encoding="utf-8") as f:
@@ -142,11 +166,12 @@ class LoggerManager:
                     "t": LoggerManager._now(),
                     "participant_id": pid,
                     "event": "session_start",
-                    "group": "video_textbook",
+                    "kind": kind,
+                    "group": LoggerManager.group_label(props),
                     "blender_version": ".".join(map(str, bpy.app.version)),
                 }, ensure_ascii=False) + "\n")
 
-            props.participant_log_path = log_path
+            setattr(props, path_attr, log_path)
             props.participant_log_error = ""
             return True
         except Exception as e:
@@ -154,14 +179,15 @@ class LoggerManager:
             return False
 
     @staticmethod
-    def append_event(context, event: dict):
+    def append_event(context, event: dict, kind="learn"):
         props = context.scene.logger_props
         if not props.enable_logging:
             return
-        if not LoggerManager.ensure_participant_log_file(context):
+        if not LoggerManager.ensure_participant_log_file(context, kind):
             return
+        path = props.test_log_path if kind == "test" else props.participant_log_path
         try:
-            with open(bpy.path.abspath(props.participant_log_path), "a", encoding="utf-8") as f:
+            with open(bpy.path.abspath(path), "a", encoding="utf-8") as f:
                 f.write(json.dumps(event, ensure_ascii=False) + "\n")
         except Exception as e:
             props.participant_log_error = f"ログ書き込みに失敗: {type(e).__name__}: {e}"
@@ -170,7 +196,7 @@ class LoggerManager:
     def log_category_detected(context, category: int, extra: dict = None):
         props = context.scene.logger_props
         pid = LoggerManager._safe_participant_id(props.participant_id)
-        elapsed = round(LoggerManager._now() - props.session_start_time, 3) if props.session_start_time > 0 else None
+        elapsed = round(LoggerManager._rel() - props.session_start_time, 3) if props.session_start_time > 0 else None
         event = {
             "t": LoggerManager._now(),
             "participant_id": pid,
@@ -265,6 +291,32 @@ class LOGGER_PG_Properties(PropertyGroup):
     )
     participant_log_path: StringProperty(default="")
     participant_log_error: StringProperty(default="")
+
+    group: EnumProperty(
+        name="群",
+        items=[
+            ('VIDEO', "動画版", "既存学習方法（動画）群"),
+            ('ADDON', "アドオン版", "現行チュートリアルアドオン群"),
+        ],
+        default='VIDEO',
+    )
+
+    # 確認テスト（両群共通）
+    test_log_path: StringProperty(default="")
+    test_error: StringProperty(default="")
+    test_active: BoolProperty(default=False)
+    test_state: StringProperty(default="IDLE")      # IDLE / RUN / DONE / END
+    test_result: StringProperty(default="")         # completed / timeout / skipped
+    test_index: IntProperty(default=0, min=0)
+    test_task_start: FloatProperty(default=0.0)
+    test_task_elapsed: FloatProperty(default=0.0)
+    test_started_at: FloatProperty(default=0.0)
+    test_undo_count: IntProperty(default=0, min=0)
+    test_reset_count: IntProperty(default=0, min=0)
+    test_completed_count: IntProperty(default=0, min=0)
+    test_view_base_loc: FloatVectorProperty(size=3)
+    test_view_base_rot: FloatVectorProperty(size=4)
+    test_view_base_dist: FloatProperty(default=15.0)
 
     enable_logging: BoolProperty(name="ログ記録を有効化", default=True)
     monitoring_active: BoolProperty(default=False)
@@ -373,7 +425,7 @@ class LOGGER_OT_start_session(Operator):
         props.baseline_edge_count = e
         props.baseline_modifier_count = LoggerManager.total_modifier_count()
 
-        props.session_start_time = LoggerManager._now()
+        props.session_start_time = LoggerManager._rel()
         props.session_started = True
         props.monitoring_active = True
 
@@ -381,7 +433,7 @@ class LOGGER_OT_start_session(Operator):
             "t": LoggerManager._now(),
             "participant_id": LoggerManager._safe_participant_id(props.participant_id),
             "event": "measurement_start",
-            "group": "video_textbook",
+            "group": LoggerManager.group_label(props),
         })
 
         bpy.ops.wm.logger_monitoring()
@@ -396,13 +448,13 @@ class LOGGER_OT_stop_session(Operator):
 
     def execute(self, context):
         props = context.scene.logger_props
-        elapsed = round(LoggerManager._now() - props.session_start_time, 3) if props.session_start_time > 0 else None
+        elapsed = round(LoggerManager._rel() - props.session_start_time, 3) if props.session_start_time > 0 else None
 
         LoggerManager.append_event(context, {
             "t": LoggerManager._now(),
             "participant_id": LoggerManager._safe_participant_id(props.participant_id),
             "event": "measurement_end",
-            "group": "video_textbook",
+            "group": LoggerManager.group_label(props),
             "total_elapsed_s": elapsed,
             "undo_count_total": int(props.undo_count),
             "cat1_done": bool(props.cat1_logged),
@@ -557,6 +609,206 @@ class LOGGER_OT_monitoring(Operator):
 
 
 # =====================================================
+# 確認テスト（両群共通）
+# 課題の表示・判定・時間計測。課題定義と判定ロジックは test_tasks.py だけにある。
+# =====================================================
+
+def _test_log(context, event_type, **fields):
+    props = context.scene.logger_props
+    ev = {
+        "t": LoggerManager._now(),
+        "participant_id": LoggerManager._safe_participant_id(props.participant_id),
+        "event": event_type,
+        "group": LoggerManager.group_label(props),
+    }
+    ev.update(fields)
+    LoggerManager.append_event(context, ev, kind="test")
+
+
+def _view_base(context):
+    space = LoggerManager.get_view3d_space(context)
+    return {
+        "loc": tuple(context.scene.logger_props.test_view_base_loc),
+        "rot": tuple(context.scene.logger_props.test_view_base_rot),
+        "dist": context.scene.logger_props.test_view_base_dist,
+    }, test_tasks.view_state(space)
+
+
+def _capture_view_base(context):
+    props = context.scene.logger_props
+    space = LoggerManager.get_view3d_space(context)
+    test_tasks.reset_view(space)
+    st = test_tasks.view_state(space)
+    if st:
+        props.test_view_base_loc = st["loc"]
+        props.test_view_base_rot = st["rot"]
+        props.test_view_base_dist = st["dist"]
+
+
+def _judge_now(context):
+    props = context.scene.logger_props
+    key = test_tasks.TASKS[props.test_index]["key"]
+    obj = test_tasks.find_target(context)
+    selected_any = any(o.select_get() for o in context.view_layer.objects)
+    base, now = _view_base(context)
+    return test_tasks.judge(key, obj, selected_any, base, now)
+
+
+def _begin_task(context, idx):
+    props = context.scene.logger_props
+    task = test_tasks.TASKS[idx]
+    props.test_index = idx
+    props.test_state = "RUN"
+    props.test_result = ""
+    props.test_reset_count = 0
+    props.test_undo_count = 0
+    test_tasks.reset_scene(context, select_cube=(task["key"] != "practice"))
+    _capture_view_base(context)
+    props.test_task_start = LoggerManager._rel()
+    _test_log(context, "test_task_start", index=idx, key=task["key"],
+              text=task["text"], limit_s=task["limit_s"])
+
+
+def _finish_task(context, result):
+    props = context.scene.logger_props
+    task = test_tasks.TASKS[props.test_index]
+    elapsed = LoggerManager._rel() - props.test_task_start
+    try:
+        _ok, sub = _judge_now(context)
+    except Exception:
+        sub = None
+    props.test_state = "DONE"
+    props.test_result = result
+    props.test_task_elapsed = elapsed
+    if result == "completed":
+        props.test_completed_count += 1
+    _test_log(context, "test_task_end", index=props.test_index, key=task["key"],
+              result=result, elapsed_s=round(elapsed, 3),
+              undo_count=int(props.test_undo_count), reset_count=int(props.test_reset_count),
+              sub=sub)
+
+
+class LOGGER_OT_test_start(Operator):
+    bl_idname = "logger.test_start"
+    bl_label = "テスト開始"
+    bl_description = "確認テストを始めます（これまで作ったシーンは消えて、課題ごとに立方体が用意されます）"
+
+    def execute(self, context):
+        props = context.scene.logger_props
+        if props.monitoring_active:
+            bpy.ops.logger.stop_session()
+        props.test_log_path = ""
+        if not LoggerManager.ensure_participant_log_file(context, "test"):
+            self.report({'ERROR'}, props.participant_log_error or "ログファイルを作成できません")
+            return {'CANCELLED'}
+        props.test_error = ""
+        props.test_active = True
+        props.test_started_at = LoggerManager._rel()
+        props.test_completed_count = 0
+        _test_log(context, "test_start", total_tasks=len(test_tasks.TASKS))
+        _begin_task(context, 0)
+        LOGGER_OT_test_monitor._running = False
+        bpy.ops.wm.logger_test_monitor()
+        return {'FINISHED'}
+
+
+class LOGGER_OT_test_next(Operator):
+    bl_idname = "logger.test_next"
+    bl_label = "次の課題へ"
+    bl_description = "次の課題に進みます"
+
+    def execute(self, context):
+        props = context.scene.logger_props
+        if not props.test_active or props.test_state != "DONE":
+            return {'CANCELLED'}
+        idx = props.test_index + 1
+        if idx < len(test_tasks.TASKS):
+            _begin_task(context, idx)
+        else:
+            _test_log(context, "test_end",
+                      total_elapsed_s=round(LoggerManager._rel() - props.test_started_at, 3),
+                      completed=int(props.test_completed_count),
+                      total_tasks=len(test_tasks.TASKS))
+            props.test_state = "END"
+            props.test_active = False
+        return {'FINISHED'}
+
+
+class LOGGER_OT_test_skip(Operator):
+    bl_idname = "logger.test_skip"
+    bl_label = "分からない（次へ）"
+    bl_description = "この課題は未完了として次へ進みます"
+
+    def execute(self, context):
+        props = context.scene.logger_props
+        if props.test_active and props.test_state == "RUN":
+            _finish_task(context, "skipped")
+        return {'FINISHED'}
+
+
+class LOGGER_OT_test_reset_scene(Operator):
+    bl_idname = "logger.test_reset_scene"
+    bl_label = "シーンをやり直す"
+    bl_description = "立方体を消してしまった時などに、この課題の最初の状態に戻します（時間は止まりません）"
+
+    def execute(self, context):
+        props = context.scene.logger_props
+        if props.test_active and props.test_state == "RUN":
+            task = test_tasks.TASKS[props.test_index]
+            test_tasks.reset_scene(context, select_cube=(task["key"] != "practice"))
+            _capture_view_base(context)
+            props.test_reset_count += 1
+            _test_log(context, "test_reset", index=props.test_index, key=task["key"])
+        return {'FINISHED'}
+
+
+class LOGGER_OT_test_monitor(Operator):
+    bl_idname = "wm.logger_test_monitor"
+    bl_label = "Comparison Test Monitor"
+    _timer = None
+    _last = 0.0
+    _running = False
+
+    def modal(self, context, event):
+        if event.type == 'TIMER':
+            try:
+                props = context.scene.logger_props
+                if not props.test_active:
+                    if self._timer:
+                        context.window_manager.event_timer_remove(self._timer)
+                    LOGGER_OT_test_monitor._running = False
+                    return {'FINISHED'}
+                now = LoggerManager._rel()
+                if props.test_state == "RUN" and now - self._last > 0.2:
+                    self._last = now
+                    ok, _sub = _judge_now(context)
+                    limit = test_tasks.TASKS[props.test_index]["limit_s"]
+                    if ok:
+                        _finish_task(context, "completed")
+                    elif now - props.test_task_start > limit:
+                        _finish_task(context, "timeout")
+                for area in context.screen.areas:
+                    if area.type == 'VIEW_3D':
+                        area.tag_redraw()
+            except Exception as e:
+                try:
+                    context.scene.logger_props.test_error = f"{type(e).__name__}: {e}"
+                except Exception:
+                    pass
+        return {'PASS_THROUGH'}
+
+    def execute(self, context):
+        if LOGGER_OT_test_monitor._running:
+            return {'CANCELLED'}
+        wm = context.window_manager
+        self._timer = wm.event_timer_add(0.2, window=context.window)
+        self._last = LoggerManager._rel()
+        LOGGER_OT_test_monitor._running = True
+        wm.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+
+# =====================================================
 # UNDO HANDLER
 # =====================================================
 
@@ -566,9 +818,10 @@ def _logger_undo_handler(*args):
         if not scene or not hasattr(scene, 'logger_props'):
             return
         props = scene.logger_props
-        if not props.monitoring_active:
-            return
-        props.undo_count += 1
+        if props.test_active and props.test_state == "RUN":
+            props.test_undo_count += 1
+        if props.monitoring_active:
+            props.undo_count += 1
     except Exception:
         pass
 
@@ -654,7 +907,7 @@ class LOGGER_OT_export_summary_csv(Operator):
 # =====================================================
 
 class LOGGER_PT_main(Panel):
-    bl_label = "学習ログ計測（比較群）"
+    bl_label = "比較実験ツール"
     bl_idname = "LOGGER_PT_main"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
@@ -663,29 +916,68 @@ class LOGGER_PT_main(Panel):
     def draw(self, context):
         layout = self.layout
         props = context.scene.logger_props
+        in_test = props.test_active
 
-        box = layout.box()
-        box.prop(props, "participant_id")
-        box.prop(props, "log_dir")
-        row = box.row(align=True)
-        row.operator("logger.set_default_log_dir", text="既定フォルダに設定")
-        row.operator("logger.open_log_folder", text="ログフォルダを開く")
-        box.prop(props, "enable_logging")
+        # テスト中は設定欄・学習ログ欄を隠して、課題だけを見せる
+        if not in_test:
+            box = layout.box()
+            box.prop(props, "participant_id")
+            box.prop(props, "group")
+            box.prop(props, "log_dir")
+            row = box.row(align=True)
+            row.operator("logger.set_default_log_dir", text="既定フォルダに設定")
+            row.operator("logger.open_log_folder", text="ログフォルダを開く")
+            box.prop(props, "enable_logging")
 
-        layout.separator()
-        col = layout.column()
-        col.scale_y = 1.4
-        if props.monitoring_active:
-            col.label(text="● 計測中")
-            col.operator("logger.stop_session", text="計測終了")
+            if props.group == 'VIDEO':
+                lbox = layout.box()
+                lbox.label(text="学習中の計測（動画版）")
+                col = lbox.column()
+                col.scale_y = 1.4
+                if props.monitoring_active:
+                    col.label(text="● 計測中")
+                    col.operator("logger.stop_session", text="計測終了")
+                else:
+                    col.operator("logger.start_session", text="計測開始")
+
+        tbox = layout.box()
+        tbox.label(text="確認テスト")
+        if not in_test:
+            if props.test_state == "END":
+                tbox.label(text="テストは終了しました。")
+                tbox.label(text="お疲れさまでした。")
+            col = tbox.column()
+            col.scale_y = 1.4
+            col.operator("logger.test_start", text="テスト開始")
         else:
-            col.operator("logger.start_session", text="計測開始")
+            tasks = test_tasks.TASKS
+            task = tasks[props.test_index]
+            tbox.label(text=f"{task['title']}（{props.test_index + 1}/{len(tasks)}）")
+            tbox.separator()
+            for line in test_tasks.wrap_text(task["text"]):
+                tbox.label(text=line)
+            tbox.separator()
+            if props.test_state == "RUN":
+                remain = max(0, int(task["limit_s"] - (LoggerManager._rel() - props.test_task_start)))
+                tbox.label(text=f"残り時間 {remain // 60}:{remain % 60:02d}")
+                tbox.operator("logger.test_skip", text="分からない（次へ）")
+                tbox.operator("logger.test_reset_scene", text="シーンをやり直す")
+            else:
+                msg = {"completed": "✓ 完了", "timeout": "時間切れ", "skipped": "スキップしました"}
+                tbox.label(text=msg.get(props.test_result, ""))
+                col = tbox.column()
+                col.scale_y = 1.4
+                last = props.test_index + 1 >= len(tasks)
+                col.operator("logger.test_next", text="テストを終了する" if last else "次の課題へ")
 
         if props.participant_log_error:
             layout.label(text=f"注意: {props.participant_log_error}")
+        if props.test_error:
+            layout.label(text=f"テストエラー: {props.test_error}")
 
-        layout.separator()
-        layout.operator("logger.export_summary_csv", text="計測結果CSV出力（実験後）")
+        if not in_test:
+            layout.separator()
+            layout.operator("logger.export_summary_csv", text="学習ログCSV出力（実験後）")
 
 
 # =====================================================
@@ -699,6 +991,11 @@ classes = (
     LOGGER_OT_start_session,
     LOGGER_OT_stop_session,
     LOGGER_OT_monitoring,
+    LOGGER_OT_test_start,
+    LOGGER_OT_test_next,
+    LOGGER_OT_test_skip,
+    LOGGER_OT_test_reset_scene,
+    LOGGER_OT_test_monitor,
     LOGGER_OT_export_summary_csv,
     LOGGER_PT_main,
 )

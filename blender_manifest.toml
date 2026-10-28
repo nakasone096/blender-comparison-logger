@@ -1,9 +1,9 @@
 schema_version = "1.0.0"
 
 id = "gakushu_logger_hikaku"
-version = "0.1.0"
+version = "0.2.0"
 name = "3DCG Learning Logger (Comparison Group)"
-tagline = "Silent background operation logger for video/textbook comparison group"
+tagline = "Closed-book test and silent logger for a comparison study"
 maintainer = "Daichi"
 type = "add-on"
 
