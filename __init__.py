@@ -2,7 +2,7 @@
 bl_info = {
     "name": "3DCG Learning Logger (Comparison Group)",
     "blender": (4, 2, 0),
-    "version": (0, 2, 0),
+    "version": (0, 2, 1),
     "author": "Daichi",
     "description": "Comparison-study tool: silent learning-phase logger (video group) and a "
                     "closed-book test mode shared by both groups. No hints, no chapter UI.",
@@ -498,6 +498,11 @@ class LOGGER_OT_stop_session(Operator):
 
         props.monitoring_active = False
         props.session_started = False
+        try:
+            if props.participant_log_path:
+                _write_learning_csv(bpy.path.abspath(props.participant_log_path))
+        except Exception:
+            pass
         self.report({'INFO'}, "計測を終了しました")
         return {'FINISHED'}
 
@@ -762,6 +767,14 @@ class LOGGER_OT_test_next(Operator):
                       total_tasks=len(test_tasks.TASKS))
             props.test_state = "END"
             props.test_active = False
+            try:
+                _write_test_csv(bpy.path.abspath(props.test_log_path))
+            except Exception as e:
+                props.test_error = f"CSV自動出力に失敗: {e}"
+            try:
+                bpy.ops.logger.test_finished('INVOKE_DEFAULT')
+            except Exception:
+                pass
         return {'FINISHED'}
 
 
@@ -861,76 +874,160 @@ def _logger_undo_handler(*args):
 # CSV エクスポート（研究者用・実験後に使用）
 # =====================================================
 
+def _write_learning_csv(jsonl_path):
+    """学習ログ(JSONL)からカテゴリ別の検出時刻CSVを作る。成功すればCSVパスを返す。"""
+    events = []
+    with open(jsonl_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+    by_category = {i: {"category": i, "label": CATEGORY_LABELS[i],
+                        "detected": False, "elapsed_s": None, "undo_count_so_far": None}
+                   for i in range(1, 7)}
+    total_elapsed = None
+    total_undo = None
+
+    for ev in events:
+        if ev.get("event") == "category_detected":
+            cat = ev.get("category")
+            if cat in by_category:
+                by_category[cat]["detected"] = True
+                by_category[cat]["elapsed_s"] = ev.get("elapsed_s")
+                by_category[cat]["undo_count_so_far"] = ev.get("undo_count_so_far")
+        if ev.get("event") == "measurement_end":
+            total_elapsed = ev.get("total_elapsed_s")
+            total_undo = ev.get("undo_count_total")
+
+    out_csv = os.path.splitext(jsonl_path)[0] + ".category_summary.csv"
+    with open(out_csv, "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["participant_log_file", os.path.basename(jsonl_path)])
+        w.writerow(["total_elapsed_s", total_elapsed if total_elapsed is not None else ""])
+        w.writerow(["undo_count_total", total_undo if total_undo is not None else ""])
+        w.writerow([])
+        w.writerow(["category", "label", "detected", "elapsed_s", "undo_count_so_far"])
+        for i in range(1, 7):
+            r = by_category[i]
+            w.writerow([
+                r["category"], r["label"], r["detected"],
+                r["elapsed_s"] if r["elapsed_s"] is not None else "",
+                r["undo_count_so_far"] if r["undo_count_so_far"] is not None else "",
+            ])
+    return out_csv
+
+
+COMBO_SUBS = ("scaled", "pillar", "cut", "material")
+
+
+def _write_test_csv(jsonl_path):
+    """確認テストのログ(JSONL)から1人分の結果CSVを作る（tools/jsonl_to_test_summary_csv.py と同じ列）。"""
+    events = []
+    with open(jsonl_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+    task_keys = [t["key"] for t in test_tasks.TASKS]
+    row = {"file": os.path.basename(jsonl_path), "participant_id": "", "group": "",
+           "total_elapsed_s": "", "completed": ""}
+    tasks = {}
+    for ev in events:
+        if not row["participant_id"] and ev.get("participant_id"):
+            row["participant_id"] = ev["participant_id"]
+        if not row["group"] and ev.get("group"):
+            row["group"] = ev["group"]
+        kind = ev.get("event")
+        if kind == "test_task_end":
+            tasks[ev.get("key")] = ev
+        elif kind == "test_end":
+            row["total_elapsed_s"] = ev.get("total_elapsed_s", "")
+            row["completed"] = ev.get("completed", "")
+
+    cols = ["file", "participant_id", "group", "total_elapsed_s", "completed"]
+    for key in task_keys:
+        ev = tasks.get(key)
+        row[f"{key}_result"] = ev.get("result", "") if ev else ""
+        row[f"{key}_elapsed_s"] = ev.get("elapsed_s", "") if ev else ""
+        row[f"{key}_undo"] = ev.get("undo_count", "") if ev else ""
+        row[f"{key}_reset"] = ev.get("reset_count", "") if ev else ""
+        cols += [f"{key}_result", f"{key}_elapsed_s", f"{key}_undo", f"{key}_reset"]
+    sub = (tasks.get("combo") or {}).get("sub") or {}
+    for sname in COMBO_SUBS:
+        row[f"combo_{sname}"] = sub.get(sname, "")
+    row["combo_score"] = sum(1 for sname in COMBO_SUBS if sub.get(sname) is True) if "combo" in tasks else ""
+    cols += [f"combo_{sname}" for sname in COMBO_SUBS] + ["combo_score"]
+
+    out_csv = os.path.splitext(jsonl_path)[0] + ".test_summary.csv"
+    with open(out_csv, "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=cols)
+        w.writeheader()
+        w.writerow(row)
+    return out_csv
+
+
 class LOGGER_OT_export_summary_csv(Operator):
     bl_idname = "logger.export_summary_csv"
     bl_label = "計測結果CSV出力"
-    bl_description = "参加者ログ(JSONL)から、カテゴリ別の検出時刻をCSV出力します"
+    bl_description = "学習ログと確認テストのログから、結果をCSV出力します"
 
     def execute(self, context):
         props = context.scene.logger_props
-        if not props.participant_log_path:
-            self.report({'ERROR'}, "ログファイルがまだありません。計測を開始してください。")
+        made = []
+        for path, writer in ((props.participant_log_path, _write_learning_csv),
+                             (props.test_log_path, _write_test_csv)):
+            if not path:
+                continue
+            p = bpy.path.abspath(path)
+            if not os.path.isfile(p):
+                continue
+            try:
+                made.append(writer(p))
+            except Exception as e:
+                self.report({'ERROR'}, f"CSV出力に失敗: {e}")
+                return {'CANCELLED'}
+        if not made:
+            self.report({'ERROR'}, "ログファイルがまだありません。")
             return {'CANCELLED'}
-
-        jsonl_path = bpy.path.abspath(props.participant_log_path)
-        if not os.path.isfile(jsonl_path):
-            self.report({'ERROR'}, f"ログファイルが見つかりません: {jsonl_path}")
-            return {'CANCELLED'}
-
-        events = []
-        try:
-            with open(jsonl_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        events.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        continue
-        except Exception as e:
-            self.report({'ERROR'}, f"ログ読み込みに失敗: {e}")
-            return {'CANCELLED'}
-
-        by_category = {i: {"category": i, "label": CATEGORY_LABELS[i],
-                            "detected": False, "elapsed_s": None, "undo_count_so_far": None}
-                       for i in range(1, 7)}
-        total_elapsed = None
-        total_undo = None
-
-        for ev in events:
-            if ev.get("event") == "category_detected":
-                cat = ev.get("category")
-                if cat in by_category:
-                    by_category[cat]["detected"] = True
-                    by_category[cat]["elapsed_s"] = ev.get("elapsed_s")
-                    by_category[cat]["undo_count_so_far"] = ev.get("undo_count_so_far")
-            if ev.get("event") == "measurement_end":
-                total_elapsed = ev.get("total_elapsed_s")
-                total_undo = ev.get("undo_count_total")
-
-        out_csv = os.path.splitext(jsonl_path)[0] + ".category_summary.csv"
-        try:
-            with open(out_csv, "w", encoding="utf-8-sig", newline="") as f:
-                w = csv.writer(f)
-                w.writerow(["participant_log_file", os.path.basename(jsonl_path)])
-                w.writerow(["total_elapsed_s", total_elapsed if total_elapsed is not None else ""])
-                w.writerow(["undo_count_total", total_undo if total_undo is not None else ""])
-                w.writerow([])
-                w.writerow(["category", "label", "detected", "elapsed_s", "undo_count_so_far"])
-                for i in range(1, 7):
-                    r = by_category[i]
-                    w.writerow([
-                        r["category"], r["label"], r["detected"],
-                        r["elapsed_s"] if r["elapsed_s"] is not None else "",
-                        r["undo_count_so_far"] if r["undo_count_so_far"] is not None else "",
-                    ])
-        except Exception as e:
-            self.report({'ERROR'}, f"CSV出力に失敗: {e}")
-            return {'CANCELLED'}
-
-        self.report({'INFO'}, f"CSV出力完了: {out_csv}")
+        self.report({'INFO'}, "CSV出力完了: " + " / ".join(made))
         return {'FINISHED'}
+
+
+class LOGGER_OT_test_finished(Operator):
+    bl_idname = "logger.test_finished"
+    bl_label = "お疲れさまでした！"
+    bl_description = "テスト終了後の案内を表示します"
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self, width=520)
+
+    def draw(self, context):
+        props = context.scene.logger_props
+        col = self.layout.column()
+        col.label(text="確認テストは終了です。続けて次の手順を行ってください。")
+        col.separator()
+        for line in END_STEPS:
+            col.label(text=line)
+
+    def execute(self, context):
+        return {'FINISHED'}
+
+
+END_STEPS = (
+    "① デスクトップのログフォルダ（学籍番号_addon／学籍番号_video）をZIPに圧縮する",
+    "② 配布サイトの「アンケートに答える」からアンケートに回答する",
+    "③ アンケート最後の欄に、①のZIPファイルをアップロードする",
+)
 
 
 # =====================================================
@@ -977,8 +1074,9 @@ class LOGGER_PT_main(Panel):
         tbox.label(text="確認テスト")
         if not in_test:
             if props.test_state == "END":
-                tbox.label(text="テストは終了しました。")
-                tbox.label(text="お疲れさまでした。")
+                tbox.label(text="テストは終了しました。お疲れさまでした！")
+                for line in END_STEPS:
+                    tbox.label(text=line)
             col = tbox.column()
             col.scale_y = 1.4
             col.operator("logger.test_start", text="テスト開始")
@@ -1010,7 +1108,7 @@ class LOGGER_PT_main(Panel):
 
         if not in_test:
             layout.separator()
-            layout.operator("logger.export_summary_csv", text="学習ログCSV出力（実験後）")
+            layout.operator("logger.export_summary_csv", text="結果CSVを再出力")
 
 
 # =====================================================
@@ -1030,6 +1128,7 @@ classes = (
     LOGGER_OT_test_reset_scene,
     LOGGER_OT_test_monitor,
     LOGGER_OT_export_summary_csv,
+    LOGGER_OT_test_finished,
     LOGGER_PT_main,
 )
 
