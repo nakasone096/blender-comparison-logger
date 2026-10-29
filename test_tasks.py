@@ -7,6 +7,7 @@ import bmesh
 from mathutils import Euler
 
 # 課題の順序は両教材の学習順（基本操作→ビュー→編集モード→マテリアル）に合わせている
+# 出題範囲は「両教材が実演している操作」だけ（ループカットは動画では実演されないので出さない）
 TASKS = [
     {"key": "practice", "title": "練習",
      "text": "立方体を選択してください", "limit_s": 120},
@@ -18,20 +19,23 @@ TASKS = [
      "text": "3Dビューの視点を、回す・横にずらす・拡大縮小する、をすべて行ってください", "limit_s": 180},
     {"key": "pillar", "title": "課題4",
      "text": "立方体の上面から、高さ2の出っ張りを上方向に作ってください", "limit_s": 180},
-    {"key": "cuts", "title": "課題5",
-     "text": "立方体の側面をぐるっと一周する切れ目を2本入れてください", "limit_s": 180},
+    {"key": "swap", "title": "課題5",
+     "text": "立方体を削除して、代わりに球を1つ追加してください", "limit_s": 180},
     {"key": "round", "title": "課題6",
      "text": "立方体のすべての角（辺）を、2分割以上のなめらかな丸みにしてください", "limit_s": 180},
     {"key": "combo", "title": "総合課題",
      "text": "立方体を2倍の大きさにし、上面から上に出っ張りを作り、"
-             "側面に一周する切れ目を1本入れ、赤い色（粗さ0.2以下）を付けてください", "limit_s": 300},
+             "すべての角（辺）を2分割以上のなめらかな丸みにし、赤い色（粗さ0.2以下）を付けてください", "limit_s": 300},
 ]
 
 TOL_POS = 0.15
 TOL_ANGLE_DEG = 5.0
 TOL_SCALE = 0.15
 ROUND_MIN_VERTS = 32       # 全辺ベベル 2分割 = 32頂点（1分割は24）
-CUTS_MIN_VERTS = 16        # ループカット2本 = 16〜18頂点
+COMBO_ROUND_MIN_VERTS = 40  # 出っ張り(12頂点)の全辺ベベル: 1分割は40未満、2分割は40以上（要・実測）
+SPHERE_MIN_VERTS = 30       # 球（UV球482／ICO球42）と立方体(8)を区別する
+SPHERE_MIN_Z_LEVELS = 5      # 高さ方向の段数（円柱・円錐・トーラスとの区別）
+SPHERE_RADIUS_CV = 0.08     # 中心からの距離のばらつき（球はほぼ0、立方体は約0.27）
 ROUGHNESS_MAX = 0.2
 
 
@@ -149,19 +153,40 @@ def judge_pillar(obj):
     return ok, None
 
 
-def judge_cuts(obj):
+def _is_sphere(obj):
     coords = mesh_coords(obj)
-    ok = (distinct_count(coords) >= CUTS_MIN_VERTS and len(coords) >= CUTS_MIN_VERTS
-          and _bbox_is_unit_cube(coords))
-    return ok, None
+    if distinct_count(coords) < SPHERE_MIN_VERTS:
+        return False
+    if len({round(c[2], 2) for c in coords}) < SPHERE_MIN_Z_LEVELS:   # 円柱は2段しかない
+        return False
+    (x0, y0, z0), (x1, y1, z1) = bbox(coords)
+    cx, cy, cz = (x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2
+    radii = [math.dist(c, (cx, cy, cz)) for c in coords]
+    mean = sum(radii) / len(radii)
+    if mean <= 1e-6:
+        return False
+    var = sum((r - mean) ** 2 for r in radii) / len(radii)
+    return math.sqrt(var) / mean < SPHERE_RADIUS_CV
+
+
+def judge_swap():
+    """立方体が無くなり、メッシュが球1つだけになっていれば合格。"""
+    meshes = [o for o in bpy.context.scene.objects if o.type == 'MESH']
+    cube_removed = not any(distinct_count(mesh_coords(o)) <= 8 for o in meshes)
+    sphere_added = any(_is_sphere(o) for o in meshes)
+    sub = {"cube_removed": cube_removed, "sphere_added": sphere_added}
+    return (cube_removed and sphere_added and len(meshes) == 1), sub
+
+
+def _has_bevel_modifier(obj):
+    return any(m.type == 'BEVEL' and m.segments >= 2 and m.width >= 0.01 for m in obj.modifiers)
 
 
 def judge_round(obj):
     if obj is None or obj.type != 'MESH':
         return False, None
-    for m in obj.modifiers:
-        if m.type == 'BEVEL' and m.segments >= 2 and m.width >= 0.01:
-            return True, None
+    if _has_bevel_modifier(obj):
+        return True, None
     coords = mesh_coords(obj)
     ok = distinct_count(coords) >= ROUND_MIN_VERTS and _bbox_is_unit_cube(coords)
     return ok, None
@@ -169,11 +194,11 @@ def judge_round(obj):
 
 def judge_combo(obj):
     if obj is None or obj.type != 'MESH':
-        return False, {"scaled": False, "pillar": False, "cut": False, "material": False}
+        return False, {"scaled": False, "pillar": False, "round": False, "material": False}
     coords = mesh_coords(obj)
     bb = bbox(coords)
     if not bb:
-        return False, {"scaled": False, "pillar": False, "cut": False, "material": False}
+        return False, {"scaled": False, "pillar": False, "round": False, "material": False}
     (x0, y0, z0), (x1, y1, z1) = bb
     sx, sy, sz = (abs(v) for v in obj.scale)
     dims_x, dims_y, dims_z = (x1 - x0) * sx, (y1 - y0) * sy, (z1 - z0) * sz
@@ -181,7 +206,7 @@ def judge_combo(obj):
     sub = {
         "scaled": _close(dims_x, 4, 0.3) and _close(dims_y, 4, 0.3),
         "pillar": len(coords) >= 12 and (dims_z - dims_x) >= 0.4 and z_levels >= 3,
-        "cut": distinct_count(coords) >= CUTS_MIN_VERTS,
+        "round": _has_bevel_modifier(obj) or distinct_count(coords) >= COMBO_ROUND_MIN_VERTS,
         "material": _material_red_and_smooth(obj),
     }
     return all(sub.values()), sub
@@ -198,8 +223,8 @@ def judge(key, obj, selected_any, view_base, view_now):
         return judge_view(view_base, view_now)
     if key == "pillar":
         return judge_pillar(obj)
-    if key == "cuts":
-        return judge_cuts(obj)
+    if key == "swap":
+        return judge_swap()
     if key == "round":
         return judge_round(obj)
     if key == "combo":

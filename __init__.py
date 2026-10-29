@@ -2,7 +2,7 @@
 bl_info = {
     "name": "3DCG Learning Logger (Comparison Group)",
     "blender": (4, 2, 0),
-    "version": (0, 2, 1),
+    "version": (0, 2, 2),
     "author": "Daichi",
     "description": "Comparison-study tool: silent learning-phase logger (video group) and a "
                     "closed-book test mode shared by both groups. No hints, no chapter UI.",
@@ -922,7 +922,7 @@ def _write_learning_csv(jsonl_path):
     return out_csv
 
 
-COMBO_SUBS = ("scaled", "pillar", "cut", "material")
+COMBO_SUBS = ("scaled", "pillar", "round", "material")
 
 
 def _write_test_csv(jsonl_path):

@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "gakushu_logger_hikaku"
-version = "0.2.1"
+version = "0.2.2"
 name = "3DCG Learning Logger (Comparison Group)"
 tagline = "Closed-book test and silent logger for a comparison study"
 maintainer = "Daichi"

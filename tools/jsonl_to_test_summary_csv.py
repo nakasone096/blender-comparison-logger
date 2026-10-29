@@ -3,8 +3,8 @@ import json
 import sys
 from pathlib import Path
 
-TASK_KEYS = ["practice", "move", "rot_scale", "view", "pillar", "cuts", "round", "combo"]
-COMBO_SUBS = ["scaled", "pillar", "cut", "material"]
+TASK_KEYS = ["practice", "move", "rot_scale", "view", "pillar", "swap", "round", "combo"]
+COMBO_SUBS = ["scaled", "pillar", "round", "material"]
 
 
 def read_events(path: Path):
