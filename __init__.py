@@ -2,7 +2,7 @@
 bl_info = {
     "name": "3DCG Learning Logger (Comparison Group)",
     "blender": (4, 2, 0),
-    "version": (0, 3, 2),
+    "version": (0, 3, 3),
     "author": "Daichi",
     "description": "Comparison-study tool: silent learning-phase logger (video group) and a "
                     "closed-book test mode shared by both groups. No hints, no chapter UI.",
