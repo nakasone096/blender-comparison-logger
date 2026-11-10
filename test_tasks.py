@@ -2,6 +2,7 @@
 """確認テスト（両群共通）の課題定義・判定・シーン初期化。
 判定ロジックはこのファイルだけに置き、アドオン群・動画群で同一の基準を使う。"""
 import math
+import colorsys
 import bpy
 import bmesh
 from mathutils import Euler
@@ -26,7 +27,7 @@ TASKS = [
     {"key": "combo", "title": "総合課題",
      "text": "①立方体を2倍の大きさにし、上面に出っ張りを作る。\n"
              "②すべての角（辺）を、2分割以上のなめらかな丸みにする。\n"
-             "③赤い色（粗さ0.2以下）にする。", "limit_s": 300},
+             "③色相・彩度・明度を調整して、赤い色にする。", "limit_s": 300},
 ]
 
 TOL_POS = 0.15
@@ -37,8 +38,10 @@ COMBO_ROUND_MIN_VERTS = 50  # 出っ張り付き(12頂点)の全辺ベベルを�
 SPHERE_MIN_VERTS = 30       # 球（UV球482／ICO球42）と立方体(8)を区別する
 SPHERE_MIN_Z_LEVELS = 5      # 高さ方向の段数（円柱・円錐・トーラスとの区別）
 SPHERE_RADIUS_CV = 0.08     # 中心からの距離のばらつき（球はほぼ0、立方体は約0.27）
-ROUGHNESS_MAX = 0.2
-ROUGHNESS_EPS = 1e-4         # Blenderは小数を32bitで持つので、0.2ちょうどは0.2000000030になる
+# 赤さの判定（Blenderの色選択の「色相・彩度・明度」と同じ見え方＝sRGB表示値で判定する）
+RED_HUE_TOL = 0.05          # 色相：赤(0)から±18°まで（オレンジ・ピンクは別の色）
+RED_SAT_MIN = 0.5           # 彩度：これ以上（薄いピンク・灰色は不合格）
+RED_VAL_MIN = 0.3           # 明度：これ以上（黒に近い暗さは不合格）
 
 
 _NO_BREAK_BEFORE = "、。，．）」』】"
@@ -128,15 +131,24 @@ def get_bsdf(material):
     return None
 
 
-def _material_red_and_smooth(obj):
+def _lin_to_srgb(c):
+    c = max(0.0, min(1.0, c))
+    return c * 12.92 if c <= 0.0031308 else 1.055 * (c ** (1 / 2.4)) - 0.055
+
+
+def _is_red_rgb(r, g, b):
+    """リニアのRGB（マテリアルの値）を、色選択の表示値(sRGB)に直して、色相・彩度・明度で赤か判定する。"""
+    h, s, v = colorsys.rgb_to_hsv(_lin_to_srgb(r), _lin_to_srgb(g), _lin_to_srgb(b))
+    return (h <= RED_HUE_TOL or h >= 1.0 - RED_HUE_TOL) and s >= RED_SAT_MIN and v >= RED_VAL_MIN
+
+
+def _material_red(obj):
     try:
-        mat = obj.active_material
-        bsdf = get_bsdf(mat)
+        bsdf = get_bsdf(obj.active_material)
         if not bsdf:
             return False
         r, g, b, _a = bsdf.inputs['Base Color'].default_value
-        rough = bsdf.inputs['Roughness'].default_value
-        return r > 0.4 and g < 0.25 and b < 0.25 and rough <= ROUGHNESS_MAX + ROUGHNESS_EPS
+        return _is_red_rgb(r, g, b)
     except Exception:
         return False
 
@@ -241,7 +253,7 @@ def judge_combo(obj):
         "scaled": _close(dims_x, 4, 0.3) and _close(dims_y, 4, 0.3),
         "pillar": len(coords) >= 12 and (dims_z - dims_x) >= 0.4 and z_levels >= 3,
         "round": _has_bevel_modifier(obj) or distinct_count(coords) >= COMBO_ROUND_MIN_VERTS,
-        "material": _material_red_and_smooth(obj),
+        "material": _material_red(obj),
     }
     return all(sub.values()), sub
 
