@@ -2,7 +2,7 @@
 bl_info = {
     "name": "3DCG Learning Logger (Comparison Group)",
     "blender": (4, 2, 0),
-    "version": (0, 2, 2),
+    "version": (0, 3, 0),
     "author": "Daichi",
     "description": "Comparison-study tool: silent learning-phase logger (video group) and a "
                     "closed-book test mode shared by both groups. No hints, no chapter UI.",
@@ -19,6 +19,7 @@ import os
 import csv
 import subprocess
 import sys
+import zipfile
 from bpy.types import Operator, Panel, PropertyGroup
 from bpy.props import (
     IntProperty,
@@ -120,6 +121,33 @@ class LoggerManager:
         abs_path = bpy.path.abspath(path)
         os.makedirs(abs_path, exist_ok=True)
         return abs_path
+
+    @staticmethod
+    def make_log_zip(props) -> str:
+        """ログフォルダを丸ごとZIPにして、フォルダのすぐ隣（既定はデスクトップ）に「フォルダ名.zip」で保存する。
+        参加者がフォルダをそのままアンケートに入れてしまう（中身が空で届く）のを防ぐため、自動で作る。"""
+        folder = bpy.path.abspath(LoggerManager.resolve_log_dir(props)).rstrip("\\/")
+        if not os.path.isdir(folder):
+            raise FileNotFoundError(f"ログフォルダが見つかりません: {folder}")
+        name = os.path.basename(folder)
+        zip_path = os.path.join(os.path.dirname(folder), name + ".zip")
+        tmp_path = zip_path + ".tmp"
+        with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for root, _dirs, files in os.walk(folder):
+                for fn in sorted(files):
+                    full = os.path.join(root, fn)
+                    zf.write(full, os.path.join(name, os.path.relpath(full, folder)))
+        os.replace(tmp_path, zip_path)
+        return zip_path
+
+    @staticmethod
+    def open_zip_in_os(zip_path: str):
+        """ZIPファイルのある場所を開く（Windowsでは、そのファイルを選択した状態で）。"""
+        abs_path = bpy.path.abspath(zip_path)
+        if os.name == "nt" and os.path.isfile(abs_path):
+            subprocess.Popen(["explorer", f"/select,{abs_path}"])
+        else:
+            LoggerManager.open_folder_in_os(os.path.dirname(abs_path))
 
     @staticmethod
     def open_folder_in_os(path: str):
@@ -331,6 +359,7 @@ class LOGGER_PG_Properties(PropertyGroup):
     # 確認テスト（両群共通）
     test_log_path: StringProperty(default="")
     test_error: StringProperty(default="")
+    zip_path: StringProperty(default="")            # 提出用に自動で作ったZIPのパス
     test_active: BoolProperty(default=False)
     test_state: StringProperty(default="IDLE")      # IDLE / RUN / DONE / END
     test_result: StringProperty(default="")         # completed / timeout / skipped
@@ -772,6 +801,11 @@ class LOGGER_OT_test_next(Operator):
             except Exception as e:
                 props.test_error = f"CSV自動出力に失敗: {e}"
             try:
+                props.zip_path = LoggerManager.make_log_zip(props)
+            except Exception as e:
+                props.zip_path = ""
+                props.test_error = f"ZIP自動作成に失敗: {e}"
+            try:
                 bpy.ops.logger.test_finished('INVOKE_DEFAULT')
             except Exception:
                 pass
@@ -1003,31 +1037,77 @@ class LOGGER_OT_export_summary_csv(Operator):
         return {'FINISHED'}
 
 
+class LOGGER_OT_make_zip(Operator):
+    bl_idname = "logger.make_zip"
+    bl_label = "ログのZIPを作る"
+    bl_description = "ログフォルダをZIPにして、デスクトップに「学籍番号_群.zip」を作ります（作り直しもできます）"
+
+    def execute(self, context):
+        props = context.scene.logger_props
+        try:
+            props.zip_path = LoggerManager.make_log_zip(props)
+        except Exception as e:
+            self.report({'ERROR'}, f"ZIPを作れません: {e}")
+            return {'CANCELLED'}
+        self.report({'INFO'}, f"ZIPを作りました: {props.zip_path}")
+        return {'FINISHED'}
+
+
+class LOGGER_OT_open_zip_folder(Operator):
+    bl_idname = "logger.open_zip_folder"
+    bl_label = "ZIPの場所を開く"
+    bl_description = "提出するZIPファイルのある場所を開きます"
+
+    def execute(self, context):
+        props = context.scene.logger_props
+        try:
+            path = props.zip_path or LoggerManager.make_log_zip(props)
+            props.zip_path = path
+            LoggerManager.open_zip_in_os(path)
+        except Exception as e:
+            self.report({'ERROR'}, f"開けません: {e}")
+            return {'CANCELLED'}
+        return {'FINISHED'}
+
+
+def _end_steps(props):
+    """テスト終了後に参加者へ見せる手順（ZIPは自動で作られている）。"""
+    if props.zip_path:
+        folder = os.path.dirname(bpy.path.abspath(props.zip_path))
+        where = "デスクトップ" if os.path.normcase(folder) == os.path.normcase(LoggerManager.desktop_dir()) else "ログフォルダの隣"
+        first = (f"① ログのZIPが、{where}に自動で作られました：",
+                 f"　　{os.path.basename(props.zip_path)}")
+    else:
+        first = ("① 下の「ログのZIPを作る」ボタンを押して、ZIPを作る",)
+    return first + (
+        "② 配布サイトの「アンケートに答える」から回答する",
+        "③ アンケートの最後の欄に、①のZIPをアップロードする",
+        "※ フォルダではなく、「.zip」のファイルを入れてください",
+    )
+
+
 class LOGGER_OT_test_finished(Operator):
     bl_idname = "logger.test_finished"
     bl_label = "お疲れさまでした！"
     bl_description = "テスト終了後の案内を表示します"
 
     def invoke(self, context, event):
-        return context.window_manager.invoke_props_dialog(self, width=520)
+        return context.window_manager.invoke_props_dialog(self, width=560)
 
     def draw(self, context):
         props = context.scene.logger_props
         col = self.layout.column()
         col.label(text="確認テストは終了です。続けて次の手順を行ってください。")
         col.separator()
-        for line in END_STEPS:
+        for line in _end_steps(props):
             col.label(text=line)
+        col.separator()
+        row = col.row(align=True)
+        row.operator("logger.open_zip_folder", text="ZIPの場所を開く")
+        row.operator("logger.make_zip", text="ZIPを作り直す")
 
     def execute(self, context):
         return {'FINISHED'}
-
-
-END_STEPS = (
-    "① デスクトップのログフォルダ（学籍番号_addon／学籍番号_video）をZIPに圧縮する",
-    "② 配布サイトの「アンケートに答える」からアンケートに回答する",
-    "③ アンケート最後の欄に、①のZIPファイルをアップロードする",
-)
 
 
 # =====================================================
@@ -1075,8 +1155,11 @@ class LOGGER_PT_main(Panel):
         if not in_test:
             if props.test_state == "END":
                 tbox.label(text="テストは終了しました。お疲れさまでした！")
-                for line in END_STEPS:
+                for line in _end_steps(props):
                     tbox.label(text=line)
+                zrow = tbox.row(align=True)
+                zrow.operator("logger.open_zip_folder", text="ZIPの場所を開く")
+                zrow.operator("logger.make_zip", text="ZIPを作り直す")
             col = tbox.column()
             col.scale_y = 1.4
             col.operator("logger.test_start", text="テスト開始")
@@ -1109,6 +1192,7 @@ class LOGGER_PT_main(Panel):
         if not in_test:
             layout.separator()
             layout.operator("logger.export_summary_csv", text="結果CSVを再出力")
+            layout.operator("logger.make_zip", text="ログのZIPを作る")
 
 
 # =====================================================
@@ -1128,6 +1212,8 @@ classes = (
     LOGGER_OT_test_reset_scene,
     LOGGER_OT_test_monitor,
     LOGGER_OT_export_summary_csv,
+    LOGGER_OT_make_zip,
+    LOGGER_OT_open_zip_folder,
     LOGGER_OT_test_finished,
     LOGGER_PT_main,
 )
