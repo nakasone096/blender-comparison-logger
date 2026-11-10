@@ -43,19 +43,22 @@ def summarize(path: Path):
         row[f"{key}_elapsed_s"] = ev.get("elapsed_s", "") if ev else ""
         row[f"{key}_undo"] = ev.get("undo_count", "") if ev else ""
         row[f"{key}_reset"] = ev.get("reset_count", "") if ev else ""
+        sub_ = (ev.get("sub") if ev else None) or {}
+        row[f"{key}_steps"] = sum(1 for v in sub_.values() if v is True) if (ev and sub_) else ""
     combo = tasks.get("combo")
     sub = (combo or {}).get("sub") or {}
     for s in COMBO_SUBS:
         row[f"combo_{s}"] = sub.get(s, "")
     row["combo_score"] = sum(1 for s in COMBO_SUBS if sub.get(s) is True) if combo else ""
+    row["steps_total"] = sum(v for k, v in row.items() if k.endswith("_steps") and v != "")
     return row
 
 
 def columns():
     cols = ["file", "participant_id", "group", "total_elapsed_s", "completed"]
     for key in TASK_KEYS:
-        cols += [f"{key}_result", f"{key}_elapsed_s", f"{key}_undo", f"{key}_reset"]
-    cols += [f"combo_{s}" for s in COMBO_SUBS] + ["combo_score"]
+        cols += [f"{key}_result", f"{key}_elapsed_s", f"{key}_undo", f"{key}_reset", f"{key}_steps"]
+    cols += [f"combo_{s}" for s in COMBO_SUBS] + ["combo_score", "steps_total"]
     return cols
 
 

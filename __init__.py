@@ -2,7 +2,7 @@
 bl_info = {
     "name": "3DCG Learning Logger (Comparison Group)",
     "blender": (4, 2, 0),
-    "version": (0, 3, 3),
+    "version": (0, 4, 0),
     "author": "Daichi",
     "description": "Comparison-study tool: silent learning-phase logger (video group) and a "
                     "closed-book test mode shared by both groups. No hints, no chapter UI.",
@@ -995,13 +995,17 @@ def _write_test_csv(jsonl_path):
         row[f"{key}_elapsed_s"] = ev.get("elapsed_s", "") if ev else ""
         row[f"{key}_undo"] = ev.get("undo_count", "") if ev else ""
         row[f"{key}_reset"] = ev.get("reset_count", "") if ev else ""
-        cols += [f"{key}_result", f"{key}_elapsed_s", f"{key}_undo", f"{key}_reset"]
+        sub_ = (ev.get("sub") if ev else None) or {}
+        row[f"{key}_steps"] = sum(1 for v in sub_.values() if v is True) if (ev and sub_) else ""
+        cols += [f"{key}_result", f"{key}_elapsed_s", f"{key}_undo", f"{key}_reset", f"{key}_steps"]
     sub = (tasks.get("combo") or {}).get("sub") or {}
     for sname in COMBO_SUBS:
         row[f"combo_{sname}"] = sub.get(sname, "")
     row["combo_score"] = sum(1 for sname in COMBO_SUBS if sub.get(sname) is True) if "combo" in tasks else ""
     cols += [f"combo_{sname}" for sname in COMBO_SUBS] + ["combo_score"]
 
+    row["steps_total"] = sum(v for k, v in row.items() if k.endswith("_steps") and v != "")
+    cols.append("steps_total")
     out_csv = os.path.splitext(jsonl_path)[0] + ".test_summary.csv"
     with open(out_csv, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.DictWriter(f, fieldnames=cols)

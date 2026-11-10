@@ -11,19 +11,22 @@ from mathutils import Euler
 # 出題範囲は「両教材が実演している操作」だけ（ループカットは動画では実演されないので出さない）
 TASKS = [
     {"key": "practice", "title": "練習",
-     "text": "立方体を選択してください", "limit_s": 120},
+     "text": "①立方体を選択する。\n②X方向に+1動かす。\n③Z軸を中心に、90°回す。", "limit_s": 180},
     {"key": "move", "title": "課題1",
-     "text": "立方体を、X方向に-2、Z方向に+1.5だけ動かしてください", "limit_s": 180},
+     "text": "①立方体を、X方向に-2動かす。\n②Z方向に+1.5動かす。\n③Y方向に+3動かす。", "limit_s": 240},
     {"key": "rot_scale", "title": "課題2",
-     "text": "立方体の高さ（Z方向）だけを、3倍に伸ばす。\nZ軸を中心に、45°回す。", "limit_s": 180},
+     "text": "①立方体の高さ（Z方向）だけを、3倍に伸ばす。\n②Z軸を中心に、45°回す。\n"
+             "③幅（X方向）だけを、2倍に伸ばす。", "limit_s": 240},
     {"key": "view", "title": "課題3",
-     "text": "3Dビューの視点を、回す・横にずらす・拡大縮小する、をすべて行ってください", "limit_s": 180},
+     "text": "①3Dビューの視点を回す。\n②3Dビューの視点を横にずらす。\n③3Dビューを拡大・縮小する。", "limit_s": 240},
     {"key": "pillar", "title": "課題4",
-     "text": "立方体の上面から、高さ2の出っ張りを上方向に作ってください", "limit_s": 180},
+     "text": "①立方体の上面から、高さ2の出っ張りを上に作る。\n"
+             "②その出っ張りの上面から、さらに高さ1を上に伸ばす。\n③全体をX方向に+2動かす。", "limit_s": 240},
     {"key": "swap", "title": "課題5",
-     "text": "立方体を削除して、代わりに球を1つ追加してください", "limit_s": 180},
+     "text": "①立方体を削除する。\n②球を1つ追加する。\n③球をX方向に+3動かす。", "limit_s": 240},
     {"key": "round", "title": "課題6",
-     "text": "立方体のすべての角（辺）を、2分割以上のなめらかな丸みにしてください", "limit_s": 180},
+     "text": "①立方体を2倍の大きさにする。\n②すべての角（辺）を、2分割以上のなめらかな丸みにする。\n"
+             "③全体をZ方向に+3動かす。", "limit_s": 240},
     {"key": "combo", "title": "総合課題",
      "text": "①立方体を2倍の大きさにし、上面に出っ張りを作る。\n"
              "②すべての角（辺）を、2分割以上のなめらかな丸みにする。\n"
@@ -155,25 +158,72 @@ def _material_red(obj):
 
 # ---------- 課題ごとの判定（戻り値: (合格か, 内訳dictまたはNone)） ----------
 
-def judge_practice(selected_any):
-    return bool(selected_any), None
+def _angle_close(deg, target, tol):
+    """角度の比較（-180〜180に直して比べる。例：270°と-90°は同じ）。"""
+    return abs((deg - target + 180.0) % 360.0 - 180.0) <= tol
+
+
+def _eff_dims(obj):
+    """メッシュの大きさ × オブジェクトのスケール。（編集モードで伸ばしても、オブジェクトモードで伸ばしても同じに見る）"""
+    bb = bbox(mesh_coords(obj))
+    if not bb:
+        return None
+    (x0, y0, z0), (x1, y1, z1) = bb
+    sx, sy, sz = (abs(v) for v in obj.scale)
+    return (x1 - x0) * sx, (y1 - y0) * sy, (z1 - z0) * sz
+
+
+def _world_center(obj):
+    """メッシュの中心の位置（オブジェクトの位置＋メッシュ内の中心のずれ×スケール）。"""
+    bb = bbox(mesh_coords(obj))
+    if not bb:
+        return tuple(obj.location)
+    (x0, y0, z0), (x1, y1, z1) = bb
+    sx, sy, sz = obj.scale
+    return (obj.location[0] + (x0 + x1) / 2 * sx, obj.location[1] + (y0 + y1) / 2 * sy,
+            obj.location[2] + (z0 + z1) / 2 * sz)
+
+
+def _rot_deg(obj):
+    return tuple(math.degrees(a) for a in obj.rotation_euler)
+
+
+def _all(sub):
+    return all(sub.values()), sub
+
+
+def judge_practice(selected_any, obj=None):
+    """①選択 ②X+1 ③Z軸90°。（選択は、動かした・回した時点で選んだものとみなす）"""
+    sub = {"select": bool(selected_any), "move": False, "rotate": False}
+    if obj is not None:
+        x, y, z = obj.location
+        rx, ry, rz = _rot_deg(obj)
+        sub["move"] = _close(x, 1, TOL_POS) and _close(y, 0, TOL_POS) and _close(z, 0, TOL_POS)
+        sub["rotate"] = _angle_close(rz, 90, TOL_ANGLE_DEG) and abs(rx) <= 3 and abs(ry) <= 3
+        sub["select"] = sub["select"] or sub["move"] or sub["rotate"] or obj.select_get()
+    return _all(sub)
 
 
 def judge_move(obj):
+    """①X-2 ②Z+1.5 ③Y+3（順番は問わない）。"""
     if obj is None:
-        return False, None
+        return False, {"x": False, "z": False, "y": False}
     x, y, z = obj.location
-    return (_close(x, -2, TOL_POS) and _close(y, 0, TOL_POS) and _close(z, 1.5, TOL_POS)), None
+    return _all({"x": _close(x, -2, TOL_POS), "z": _close(z, 1.5, TOL_POS), "y": _close(y, 3, TOL_POS)})
 
 
 def judge_rot_scale(obj):
-    if obj is None:
-        return False, None
-    sx, sy, sz = obj.scale
-    rx, ry, rz = (math.degrees(a) for a in obj.rotation_euler)
-    ok = (_close(sx, 1, TOL_SCALE) and _close(sy, 1, TOL_SCALE) and _close(sz, 3, TOL_SCALE)
-          and _close(rz, 45, TOL_ANGLE_DEG) and abs(rx) <= 3 and abs(ry) <= 3)
-    return ok, None
+    """①高さ3倍 ②Z軸45° ③幅2倍（奥行きは1倍のまま）。"""
+    if obj is None or obj.type != 'MESH' or _eff_dims(obj) is None:
+        return False, {"height": False, "rotate": False, "width": False}
+    dx, dy, dz = _eff_dims(obj)
+    sx, sy, sz = dx / 2, dy / 2, dz / 2          # 2×2×2の立方体が元の大きさ
+    rx, ry, rz = _rot_deg(obj)
+    return _all({
+        "height": _close(sz, 3, TOL_SCALE),
+        "rotate": _angle_close(rz, 45, TOL_ANGLE_DEG) and abs(rx) <= 3 and abs(ry) <= 3,
+        "width": _close(sx, 2, TOL_SCALE) and _close(sy, 1, TOL_SCALE),
+    })
 
 
 def judge_view(base, now):
@@ -188,15 +238,25 @@ def judge_view(base, now):
 
 
 def judge_pillar(obj):
+    """①高さ2の出っ張り ②その上からさらに高さ1 ③全体をX+2動かす。
+    （全体の位置がずれても判定できるよう、メッシュの一番下の位置を基準に見る）"""
+    sub = {"pillar": False, "extend": False, "move": False}
     coords = mesh_coords(obj)
-    if len(coords) < 12 or distinct_count(coords) < 12:
-        return False, None
+    if obj is None or obj.type != 'MESH' or len(coords) < 12 or distinct_count(coords) < 12:
+        return False, sub
     (x0, y0, z0), (x1, y1, z1) = bbox(coords)
-    ring = sum(1 for c in coords if _close(c[2], 1.0, 0.1))
-    ok = (_close(z0, -1, 0.1) and _close(z1, 3, 0.25)
-          and _close(x0, -1, 0.1) and _close(x1, 1, 0.1)
-          and _close(y0, -1, 0.1) and _close(y1, 1, 0.1) and ring >= 4)
-    return ok, None
+
+    def n_at(dz):
+        return sum(1 for c in coords if _close(c[2], z0 + dz, 0.15))
+
+    sx, sy, sz = (abs(v) for v in obj.scale)
+    body = (_close((x1 - x0) * sx, 2, 0.2) and _close((y1 - y0) * sy, 2, 0.2)
+            and n_at(2.0) >= 4 and n_at(4.0) >= 4)
+    sub["pillar"] = body
+    sub["extend"] = body and _close(z1 - z0, 5.0, 0.25) and n_at(5.0) >= 4
+    cx, cy, _cz = _world_center(obj)
+    sub["move"] = _close(cx, 2, 0.3) and _close(cy, 0, 0.3)
+    return _all(sub)
 
 
 def _is_sphere(obj):
@@ -216,12 +276,16 @@ def _is_sphere(obj):
 
 
 def judge_swap():
-    """立方体が無くなり、メッシュが球1つだけになっていれば合格。"""
+    """①立方体を削除 ②球を追加（メッシュは球1つだけ） ③球をX+3動かす。"""
     meshes = [o for o in bpy.context.scene.objects if o.type == 'MESH']
     cube_removed = not any(distinct_count(mesh_coords(o)) <= 8 for o in meshes)
-    sphere_added = any(_is_sphere(o) for o in meshes)
-    sub = {"cube_removed": cube_removed, "sphere_added": sphere_added}
-    return (cube_removed and sphere_added and len(meshes) == 1), sub
+    spheres = [o for o in meshes if _is_sphere(o)]
+    sphere_added = bool(spheres) and len(meshes) == 1
+    moved = False
+    if spheres:
+        cx, cy, cz = _world_center(spheres[0])
+        moved = _close(cx, 3, 0.3) and _close(cy, 0, 0.3) and _close(cz, 0, 0.3)
+    return _all({"cube_removed": cube_removed, "sphere_added": sphere_added, "moved": moved})
 
 
 def _has_bevel_modifier(obj):
@@ -229,13 +293,17 @@ def _has_bevel_modifier(obj):
 
 
 def judge_round(obj):
-    if obj is None or obj.type != 'MESH':
-        return False, None
-    if _has_bevel_modifier(obj):
-        return True, None
+    """①2倍の大きさ ②2分割以上の丸み ③全体をZ+3動かす。"""
+    if obj is None or obj.type != 'MESH' or _eff_dims(obj) is None:
+        return False, {"scaled": False, "round": False, "move": False}
+    dx, dy, dz = _eff_dims(obj)
     coords = mesh_coords(obj)
-    ok = distinct_count(coords) >= ROUND_MIN_VERTS and _bbox_is_unit_cube(coords)
-    return ok, None
+    cx, cy, cz = _world_center(obj)
+    return _all({
+        "scaled": _close(dx, 4, 0.3) and _close(dy, 4, 0.3) and _close(dz, 4, 0.3),
+        "round": _has_bevel_modifier(obj) or distinct_count(coords) >= ROUND_MIN_VERTS,
+        "move": _close(cz, 3, 0.3) and _close(cx, 0, 0.3) and _close(cy, 0, 0.3),
+    })
 
 
 def judge_combo(obj):
@@ -260,7 +328,7 @@ def judge_combo(obj):
 
 def judge(key, obj, selected_any, view_base, view_now):
     if key == "practice":
-        return judge_practice(selected_any)
+        return judge_practice(selected_any, obj)
     if key == "move":
         return judge_move(obj)
     if key == "rot_scale":
