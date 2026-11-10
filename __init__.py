@@ -2,7 +2,7 @@
 bl_info = {
     "name": "3DCG Learning Logger (Comparison Group)",
     "blender": (4, 2, 0),
-    "version": (0, 3, 0),
+    "version": (0, 3, 1),
     "author": "Daichi",
     "description": "Comparison-study tool: silent learning-phase logger (video group) and a "
                     "closed-book test mode shared by both groups. No hints, no chapter UI.",
@@ -1168,7 +1168,7 @@ class LOGGER_PT_main(Panel):
             task = tasks[props.test_index]
             tbox.label(text=f"{task['title']}（{props.test_index + 1}/{len(tasks)}）")
             tbox.separator()
-            for line in test_tasks.wrap_text(task["text"]):
+            for line in test_tasks.wrap_text(task["text"], test_tasks.panel_width_units(context)):
                 tbox.label(text=line)
             tbox.separator()
             if props.test_state == "RUN":

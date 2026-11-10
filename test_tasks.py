@@ -14,7 +14,7 @@ TASKS = [
     {"key": "move", "title": "課題1",
      "text": "立方体を、X方向に-2、Z方向に+1.5だけ動かしてください", "limit_s": 180},
     {"key": "rot_scale", "title": "課題2",
-     "text": "立方体の高さ（Z方向）だけを3倍に伸ばし、Z軸を中心に45°回してください", "limit_s": 180},
+     "text": "立方体の高さ（Z方向）だけを、3倍に伸ばす。\nZ軸を中心に、45°回す。", "limit_s": 180},
     {"key": "view", "title": "課題3",
      "text": "3Dビューの視点を、回す・横にずらす・拡大縮小する、をすべて行ってください", "limit_s": 180},
     {"key": "pillar", "title": "課題4",
@@ -24,23 +24,57 @@ TASKS = [
     {"key": "round", "title": "課題6",
      "text": "立方体のすべての角（辺）を、2分割以上のなめらかな丸みにしてください", "limit_s": 180},
     {"key": "combo", "title": "総合課題",
-     "text": "立方体を2倍の大きさにし、上面から上に出っ張りを作り、"
-             "すべての角（辺）を2分割以上のなめらかな丸みにし、赤い色（粗さ0.2以下）を付けてください", "limit_s": 300},
+     "text": "①立方体を2倍の大きさにし、上面に出っ張りを作る。\n"
+             "②すべての角（辺）を、2分割以上のなめらかな丸みにする。\n"
+             "③赤い色（粗さ0.2以下）にする。", "limit_s": 300},
 ]
 
 TOL_POS = 0.15
 TOL_ANGLE_DEG = 5.0
 TOL_SCALE = 0.15
 ROUND_MIN_VERTS = 32       # 全辺ベベル 2分割 = 32頂点（1分割は24）
-COMBO_ROUND_MIN_VERTS = 40  # 出っ張り(12頂点)の全辺ベベル: 1分割は40未満、2分割は40以上（要・実測）
+COMBO_ROUND_MIN_VERTS = 50  # 出っ張り付き(12頂点)の全辺ベベルを適用した頂点数：1分割＝40、2分割＝68（実測）
 SPHERE_MIN_VERTS = 30       # 球（UV球482／ICO球42）と立方体(8)を区別する
 SPHERE_MIN_Z_LEVELS = 5      # 高さ方向の段数（円柱・円錐・トーラスとの区別）
 SPHERE_RADIUS_CV = 0.08     # 中心からの距離のばらつき（球はほぼ0、立方体は約0.27）
 ROUGHNESS_MAX = 0.2
+ROUGHNESS_EPS = 1e-4         # Blenderは小数を32bitで持つので、0.2ちょうどは0.2000000030になる
 
 
-def wrap_text(text, width=17):
-    return [text[i:i + width] for i in range(0, len(text), width)]
+_NO_BREAK_BEFORE = "、。，．）」』】"
+_BULLETS = "①②③④⑤⑥"
+
+
+def _units(ch):
+    """表示幅（半角=1、全角=2）。"""
+    return 1 if ord(ch) < 0x250 else 2
+
+
+def wrap_text(text, width=34):
+    """課題文を、パネルの幅（半角単位）で折り返す。改行（\\n）は意味の区切りとして必ず改行する。
+    ①②…で始まる区切りは、折り返した行を1字ぶん下げる。"""
+    lines = []
+    for seg in text.split("\n"):
+        indent = "　" if seg[:1] in _BULLETS else ""
+        cur, w, first = "", 0, True
+        for ch in seg:
+            cw = _units(ch)
+            if w + cw > width and cur and ch not in _NO_BREAK_BEFORE:
+                lines.append(cur)
+                cur, w, first = indent, _units("　") if indent else 0, False
+            cur += ch
+            w += cw
+        lines.append(cur)
+    return lines
+
+
+def panel_width_units(context, default=34):
+    """サイドバーの幅から、1行に入る半角文字数を見積もる（全角1字≒15px、左右の余白≒40px）。"""
+    try:
+        px = context.region.width / max(0.5, context.preferences.system.ui_scale)
+        return max(16, int((px - 40) / 7.5))
+    except Exception:
+        return default
 
 
 # ---------- 幾何ヘルパー ----------
@@ -102,7 +136,7 @@ def _material_red_and_smooth(obj):
             return False
         r, g, b, _a = bsdf.inputs['Base Color'].default_value
         rough = bsdf.inputs['Roughness'].default_value
-        return r > 0.4 and g < 0.25 and b < 0.25 and rough <= ROUGHNESS_MAX
+        return r > 0.4 and g < 0.25 and b < 0.25 and rough <= ROUGHNESS_MAX + ROUGHNESS_EPS
     except Exception:
         return False
 
